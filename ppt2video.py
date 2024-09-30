@@ -20,6 +20,7 @@ parser.add_argument('--pronunciation_mapping', help="File that maps the spelling
 parser.add_argument('--video_width', default=1920, help='Width of the output video in pixels; default: 1920', type=int)
 parser.add_argument('--video_height', default=1080, help='Height of the output video in pixels; default: 1080', type=int)
 parser.add_argument('--api', default='Azure', choices=['SAPI', 'Azure'], help='API to use for speech synthesis: Azure (default; Microsoft Azure AI Speech SDK, requires API key set as environment variable SPEECH_KEY and region in SPEECH_REGION) or SAPI (Microsoft Speech API, part of Windows)', type=str)
+parser.add_argument('--update', type=ensure_full_path, help='Folder with temporary files from previous conversion to reuse when only a subset of the slides were updated; should be used together with --slides, must use the same file extension for the output file (i.e., the same video container format) as the previous conversion, and the slide order and count must be the same as in the previous conversion')
 args = parser.parse_args()
 
 # import API
@@ -47,12 +48,13 @@ if args.api == 'Azure':
 container_format = os.path.splitext(args.output)[1][1:]
 
 # Create temp directories
-temp_dir = mkdtemp()
+temp_dir = args.update if args.update else mkdtemp()
 slide_folder = os.path.join(temp_dir, "slides")
 audio_folder = os.path.join(temp_dir, "audio")
 video_folder = os.path.join(temp_dir, "video")
-for dir in [slide_folder, audio_folder, video_folder]:
-    os.mkdir(dir)
+if not args.update:
+    for dir in [slide_folder, audio_folder, video_folder]:
+        os.mkdir(dir)
 
 # Open PowerPoint file, will be needed to extract slide images and notes
 ppt = win32.Dispatch("PowerPoint.Application")
@@ -79,6 +81,7 @@ subprocess.run(f'ffmpeg -y -hide_banner -loglevel error -f lavfi -i anullsrc=r=1
     
 # remember created slide videos for ffmpeg concat later
 slide_videos = []
+total_chars = 0
 
 # Loop over slides in presentation
 for slide_number in slide_list:
@@ -98,9 +101,13 @@ for slide_number in slide_list:
     for word, pronunciation in pronunciation_mapping.items():
         slide_text = re.sub(rf'\b{re.escape(word)}\b', pronunciation, slide_text, flags=re.IGNORECASE)
     
+    total_chars += len(slide_text)
+    
     # Export slide as image
     print(f"  Exporting slide {slide_number} as image")
     slide_image_file = os.path.join(slide_folder, f"slide_{slide_number}.png")
+    if os.path.exists(slide_image_file):
+        os.remove(slide_image_file)
     slide.Export(slide_image_file, "PNG", ScaleWidth=args.video_width, ScaleHeight=args.video_height)
         
     # Synthesize audio for slide text
@@ -143,18 +150,21 @@ for slide_number in slide_list:
 presentation.Close()
 ppt.Quit()    
 
-# Create final video by concatenating all slide videos
 if len(slide_videos) == 0:
-    print("No slide videos created, exiting")
+    print(f"No slide videos {'updated' if args.update else 'created'}, exiting")
     exit(0)
 
+# Create final video by concatenating all slide videos
 concat_file = os.path.join(temp_dir, "concat.txt")
-with open(concat_file, "w") as video_list_file:
-    for slide_video in slide_videos:
-        video_list_file.write(f"file '{slide_video}'\n")
+# Create list of slide videos to concatenate only if not updating previous conversion
+if not args.update:
+    with open(concat_file, "w") as video_list_file:
+        for slide_video in slide_videos:
+            video_list_file.write(f"file '{slide_video}'\n")
 
 print("Creating full video by concatenating all slide videos")
 subprocess.run(f'ffmpeg -y -hide_banner -loglevel error -f concat -safe 0 -i "{concat_file}" -c copy "{args.output}"', shell=True)
 
+print(f"Total characters synthesized: {total_chars}")
 print(f"Temporary files kept in {temp_dir}")
 print("Done.")
