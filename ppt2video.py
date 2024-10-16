@@ -21,6 +21,7 @@ parser.add_argument('--video_width', default=1920, help='Width of the output vid
 parser.add_argument('--video_height', default=1080, help='Height of the output video in pixels; default: 1080', type=int)
 parser.add_argument('--api', default='Azure', choices=['SAPI', 'Azure'], help='API to use for speech synthesis: Azure (default; Microsoft Azure AI Speech SDK, requires API key set as environment variable SPEECH_KEY and region in SPEECH_REGION) or SAPI (Microsoft Speech API, part of Windows)', type=str)
 parser.add_argument('--update', type=ensure_full_path, help='Folder with temporary files from previous conversion to reuse when only a subset of the slides were updated; should be used together with --slides, must use the same file extension for the output file (i.e., the same video container format) as the previous conversion, and the slide order and count must be the same as in the previous conversion')
+parser.add_argument('--quit_ppt', action='store_true', help='Quit PowerPoint after processing the presentation, if no other presentations are open')
 args = parser.parse_args()
 
 # import API
@@ -148,7 +149,10 @@ for slide_number in slide_list:
 
 # Close PowerPoint
 presentation.Close()
-ppt.Quit()    
+
+# If no open presentations remaining - quit PowerPoint
+if args.quitppt and ppt.Presentations.Count == 0:
+    ppt.Quit()
 
 if len(slide_videos) == 0:
     print(f"No slide videos {'updated' if args.update else 'created'}, exiting")
