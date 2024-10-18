@@ -22,10 +22,12 @@ parser.add_argument('--video_height', default=1080, help='Height of the output v
 parser.add_argument('--api', default='Azure', choices=['SAPI', 'Azure'], help='API to use for speech synthesis: Azure (default; Microsoft Azure AI Speech SDK, requires API key set as environment variable SPEECH_KEY and region in SPEECH_REGION) or SAPI (Microsoft Speech API, part of Windows)', type=str)
 parser.add_argument('--update', type=ensure_full_path, help='Folder with temporary files from previous conversion to reuse when only a subset of the slides were updated; should be used together with --slides, must use the same file extension for the output file (i.e., the same video container format) as the previous conversion, and the slide order and count must be the same as in the previous conversion')
 parser.add_argument('--quit_ppt', action='store_true', help='Quit PowerPoint after processing the presentation, if no other presentations are open')
+parser.add_argument('--skip_image', action='store_true', help='Skip image extraction and use existing image files in the temporary folder; must be combined with --update')
+parser.add_argument('--skip_audio', action='store_true', help='Skip audio synthesis and use existing audio files in the temporary folder; must be combined with --update')
 args = parser.parse_args()
 
 # import API
-if args.api == 'Azure':
+if args.api == 'Azure' and not args.skip_audio:
     import azure.cognitiveservices.speech as speechsdk
 
 # Pronunciation mapping file contains lines matching the pattern word=pronunciation, e.g.:
@@ -39,7 +41,7 @@ if args.pronunciation_mapping:
             pronunciation_mapping[word.lower().strip()] = pronunciation.lower().strip()
 
 # Init Azure Speech SDK
-if args.api == 'Azure':
+if args.api == 'Azure' and not args.skip_audio:
     speech_config = speechsdk.SpeechConfig(
         subscription=os.environ.get('SPEECH_KEY'), 
         region=os.environ.get('SPEECH_REGION'))
@@ -88,57 +90,59 @@ total_chars = 0
 for slide_number in slide_list:
     print(f"Processing slide {slide_number}")
     slide = presentation.Slides(slide_number)
+    audio_file = os.path.join(audio_folder, f"audio_{slide_number}.wav")
+    audio_file_padded = audio_file.replace('.wav', '.m4a')
+
+    # Export slide as image
+    if not args.skip_image:
+        print(f"  Exporting slide {slide_number} as image")
+        slide_image_file = os.path.join(slide_folder, f"slide_{slide_number}.png")
+        if os.path.exists(slide_image_file):
+            os.remove(slide_image_file)
+        slide.Export(slide_image_file, "PNG", ScaleWidth=args.video_width, ScaleHeight=args.video_height)
 
     # Read slide text
-    slide_text = slide.NotesPage.Shapes.Placeholders(2).TextFrame.TextRange.Text    
-    if not slide_text or len(slide_text.strip()) == 0:
-        print(f"  Skipping slide {slide_number} because no note text found")
-        continue
-    
-    # Remove newlines and carriage returns
-    slide_text = slide_text.replace('\n', ' ').replace('\r', ' ').strip()
-    
-    # Replace words with pronunciation from mapping file
-    for word, pronunciation in pronunciation_mapping.items():
-        slide_text = re.sub(rf'\b{re.escape(word)}\b', pronunciation, slide_text, flags=re.IGNORECASE)
-    
-    total_chars += len(slide_text)
-    
-    # Export slide as image
-    print(f"  Exporting slide {slide_number} as image")
-    slide_image_file = os.path.join(slide_folder, f"slide_{slide_number}.png")
-    if os.path.exists(slide_image_file):
-        os.remove(slide_image_file)
-    slide.Export(slide_image_file, "PNG", ScaleWidth=args.video_width, ScaleHeight=args.video_height)
+    if not args.skip_audio:
+        slide_text = slide.NotesPage.Shapes.Placeholders(2).TextFrame.TextRange.Text    
+        if not slide_text or len(slide_text.strip()) == 0:
+            print(f"  Skipping slide {slide_number} because no note text found")
+            continue
         
-    # Synthesize audio for slide text
-    audio_file = os.path.join(audio_folder, f"audio_{slide_number}.wav")
-    print(f"  Synthesizing audio of slide {slide_number}")    
-    if args.api == 'Azure': 
-        audio_config = speechsdk.audio.AudioOutputConfig(filename=audio_file)
-        speech_synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
-        speech_synthesis_result = speech_synthesizer.speak_text_async(slide_text).get()
-        if speech_synthesis_result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-            pass
-        elif speech_synthesis_result.reason == speechsdk.ResultReason.Canceled:
-            cancellation_details = speech_synthesis_result.cancellation_details
-            print(f"  Speech synthesis canceled: {cancellation_details.reason}")
-            if cancellation_details.reason == speechsdk.CancellationReason.Error:
-                if cancellation_details.error_details:
-                    print(f"  Error details: {cancellation_details.error_details}. Did you set the speech resource key and region values?")
-            break
-    else: # SAPI
-        sapi = win32.Dispatch("SAPI.SpVoice")
-        sapi.Voice = sapi.GetVoices().Item(int(args.voice))
-        outfile = win32.Dispatch("SAPI.SpFileStream")
-        outfile.Open(audio_file, 3, False)
-        sapi.AudioOutputStream = outfile
-        sapi.Speak(slide_text)
-        outfile.Close()
+        # Remove newlines and carriage returns
+        slide_text = slide_text.replace('\n', ' ').replace('\r', ' ').strip()
+        
+        # Replace words with pronunciation from mapping file
+        for word, pronunciation in pronunciation_mapping.items():
+            slide_text = re.sub(rf'\b{re.escape(word)}\b', pronunciation, slide_text, flags=re.IGNORECASE)
+        
+        total_chars += len(slide_text)
     
-    # Extend audio with silence in front and back and encode using AAC codec
-    audio_file_padded = audio_file.replace('.wav', '.m4a')
-    subprocess.run('ffmpeg -y -hide_banner -loglevel error -i "{silence}" -i "{audio_in}" -i "{silence}" -filter_complex "[0:0][1:0][2:0]concat=n=3:v=0:a=1[a]" -map "[a]" -c:a aac -strict experimental "{audio_out}"'.format(silence=silence_file, audio_in=audio_file, audio_out=audio_file_padded), shell=True)
+        # Synthesize audio for slide text
+        print(f"  Synthesizing audio of slide {slide_number}")    
+        if args.api == 'Azure': 
+            audio_config = speechsdk.audio.AudioOutputConfig(filename=audio_file)
+            speech_synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
+            speech_synthesis_result = speech_synthesizer.speak_text_async(slide_text).get()
+            if speech_synthesis_result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+                pass
+            elif speech_synthesis_result.reason == speechsdk.ResultReason.Canceled:
+                cancellation_details = speech_synthesis_result.cancellation_details
+                print(f"  Speech synthesis canceled: {cancellation_details.reason}")
+                if cancellation_details.reason == speechsdk.CancellationReason.Error:
+                    if cancellation_details.error_details:
+                        print(f"  Error details: {cancellation_details.error_details}. Did you set the speech resource key and region values?")
+                break
+        else: # SAPI
+            sapi = win32.Dispatch("SAPI.SpVoice")
+            sapi.Voice = sapi.GetVoices().Item(int(args.voice))
+            outfile = win32.Dispatch("SAPI.SpFileStream")
+            outfile.Open(audio_file, 3, False)
+            sapi.AudioOutputStream = outfile
+            sapi.Speak(slide_text)
+            outfile.Close()
+    
+        # Extend audio with silence in front and back and encode using AAC codec
+        subprocess.run('ffmpeg -y -hide_banner -loglevel error -i "{silence}" -i "{audio_in}" -i "{silence}" -filter_complex "[0:0][1:0][2:0]concat=n=3:v=0:a=1[a]" -map "[a]" -c:a aac -strict experimental "{audio_out}"'.format(silence=silence_file, audio_in=audio_file, audio_out=audio_file_padded), shell=True)
     
     # Create video from slide image and synthesized audio
     video_file = os.path.join(video_folder, f"video_{slide_number}.{container_format}")
@@ -151,7 +155,7 @@ for slide_number in slide_list:
 presentation.Close()
 
 # If no open presentations remaining - quit PowerPoint
-if args.quitppt and ppt.Presentations.Count == 0:
+if args.quit_ppt and ppt.Presentations.Count == 0:
     ppt.Quit()
 
 if len(slide_videos) == 0:
