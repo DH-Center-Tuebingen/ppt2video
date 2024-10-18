@@ -24,6 +24,7 @@ parser.add_argument('--update', type=ensure_full_path, help='Folder with tempora
 parser.add_argument('--quit_ppt', action='store_true', help='Quit PowerPoint after processing the presentation, if no other presentations are open')
 parser.add_argument('--skip_image', action='store_true', help='Skip image extraction and use existing image files in the temporary folder; must be combined with --update')
 parser.add_argument('--skip_audio', action='store_true', help='Skip audio synthesis and use existing audio files in the temporary folder; must be combined with --update')
+parser.add_argument('--poster_slide', type=int, default=1, help='Slide number to use as poster slide for the video (first slide by default)')
 args = parser.parse_args()
 
 # import API
@@ -171,7 +172,14 @@ if not args.update:
             video_list_file.write(f"file '{slide_video}'\n")
 
 print("Creating full video by concatenating all slide videos")
-subprocess.run(f'ffmpeg -y -hide_banner -loglevel error -f concat -safe 0 -i "{concat_file}" -c copy "{args.output}"', shell=True)
+# Create temporary full video file
+temp_output_file = os.path.join(temp_dir, "__temp_video__." + container_format)
+subprocess.run(f'ffmpeg -y -hide_banner -loglevel error -f concat -safe 0 -i "{concat_file}" -c copy "{temp_output_file}"', shell=True)
+# Add poster image for final video
+poster_slide_file = os.path.join(slide_folder, f"slide_{args.poster_slide}.png")
+subprocess.run(f'ffmpeg -y -hide_banner -loglevel error -i "{temp_output_file}" -i "{poster_slide_file}" -map 0 -map 1 -c copy -c:v:1 png -disposition:v:1 attached_pic "{args.output}"', shell=True)
+# Clean up
+os.remove(temp_output_file)
 
 print(f"Total characters synthesized: {total_chars}")
 print(f"Temporary files kept in {temp_dir}")
