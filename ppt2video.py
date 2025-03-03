@@ -150,7 +150,7 @@ for slide_number in slide_list:
     slide_videos.append(video_file)
     
     print(f"  Creating video of slide {slide_number} with synthesized audio and slide image")
-    subprocess.run('ffmpeg -y -hide_banner -loglevel error -loop 1 -i "{slide}" -i "{audio}" -c:v libx264 -framerate 5 -c:a copy -tune stillimage -shortest {video}'.format(slide=os.path.join(slide_folder, slide_image_file), audio=audio_file_padded, video=video_file), shell=True)
+    subprocess.run('ffmpeg -y -hide_banner -loglevel error -loop 1 -i "{slide}" -i "{audio}" -c:v libx264 -framerate 5 -c:a copy -pix_fmt yuv420p -tune stillimage -shortest {video}'.format(slide=os.path.join(slide_folder, slide_image_file), audio=audio_file_padded, video=video_file), shell=True)
 
 # Close PowerPoint
 presentation.Close()
